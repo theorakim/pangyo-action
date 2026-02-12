@@ -411,7 +411,7 @@ def build_message_claude(forecast: dict, location: str, label: str) -> str | Non
         print("🤖 Claude API로 브리핑 생성 중...")
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-sonnet-4-5-20250929",
             max_tokens=500,
             messages=[{"role": "user", "content": prompt}],
         )
