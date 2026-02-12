@@ -25,6 +25,7 @@ jobs:
 
       - name: 🌤️ 날씨 조회 및 카카오톡 전송
         env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KMA_API_KEY: ${{ secrets.KMA_API_KEY }}
           KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}

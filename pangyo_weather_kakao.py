@@ -41,6 +41,12 @@ except ImportError:
     print("  pip install requests")
     sys.exit(1)
 
+try:
+    import anthropic
+    HAS_ANTHROPIC = True
+except ImportError:
+    HAS_ANTHROPIC = False
+
 
 # ============================================================
 # 설정 (CONFIG) - 환경변수 우선, 없으면 기본값 사용
@@ -55,6 +61,9 @@ CONFIG = {
     "KAKAO_REFRESH_TOKEN": os.environ.get("KAKAO_REFRESH_TOKEN", ""),
     "KAKAO_REST_API_KEY": os.environ.get("KAKAO_REST_API_KEY", ""),
     "KAKAO_CLIENT_SECRET": os.environ.get("KAKAO_CLIENT_SECRET", ""),
+
+    # Claude API (브리핑 생성용)
+    "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
 
     # 카카오톡 send_message.py 경로 (로컬 실행용 폴백)
     "KAKAO_SCRIPT": os.environ.get("KAKAO_SCRIPT", "/mnt/skills/user/kakaotalk/scripts/send_message.py"),
@@ -295,70 +304,133 @@ def parse_forecast(items: list[dict], target_date: str) -> dict:
     }
 
 
-def build_message(forecast: dict, location: str) -> str:
-    """카카오톡으로 보낼 메시지를 생성합니다."""
+def build_message_simple(forecast: dict, location: str, label: str) -> str:
+    """폴백용 간단한 메시지 생성 (Claude API 없을 때)."""
 
     d = forecast["date"]
-    year = d[:4]
     month = int(d[4:6])
     day = int(d[6:8])
-    dt = datetime(int(year), month, day)
+    dt = datetime(int(d[:4]), month, day)
     weekday = WEEKDAYS[dt.weekday()]
 
     lines = []
-
-    # 헤더
-    lines.append(f"{location} 날씨 ({month}/{day} {weekday}) {forecast['sky_text']}")
+    lines.append(f"{label}({month}/{day} {weekday}) {location} 날씨 {forecast['sky_text']}")
     lines.append("")
 
-    # 기온
     if forecast["tmn"] is not None and forecast["tmx"] is not None:
-        lines.append(f"🌡️ {forecast['tmn']:.0f}°C / {forecast['tmx']:.0f}°C")
-    elif forecast["temps"]:
-        lines.append(f"🌡️ {min(forecast['temps']):.0f}°C ~ {max(forecast['temps']):.0f}°C")
+        lines.append(f"▸ 아침 {forecast['tmn']:.0f}°C, 낮 최고 {forecast['tmx']:.0f}°C")
 
-    # 하늘 상태
-    lines.append(f"🌤️ {forecast['sky_text']}")
+    lines.append(f"▸ {forecast['sky_text']}")
 
-    # 강수 정보
     if forecast["rain_hours"]:
-        lines.append("")
-        lines.append("🌧️ 강수 예상 시간대:")
-        for hour, pty_text in forecast["rain_hours"]:
-            lines.append(f"  ▸ {hour}: {pty_text}")
+        hours = [h for h, _ in forecast["rain_hours"]]
+        lines.append(f"▸ 강수 예상: {', '.join(hours)}")
     else:
-        lines.append("☂️ 강수 예상 없음")
+        lines.append("▸ 강수 예상 없음")
 
-    # 적설
     if forecast["snow_hours"]:
-        lines.append("")
-        lines.append("❄️ 적설 예상:")
         for hour, sno in forecast["snow_hours"]:
-            lines.append(f"  ▸ {hour}: {sno}")
+            lines.append(f"▸ 적설 예상: {hour} {sno}")
 
-    # 시간대별 기온 요약 (06, 09, 12, 15, 18, 21시)
     key_hours = ["0600", "0900", "1200", "1500", "1800", "2100"]
     temp_summary = []
     for h in key_hours:
         if h in forecast["hourly"] and "TMP" in forecast["hourly"][h]:
             temp_summary.append(f"{int(h[:2])}시 {forecast['hourly'][h]['TMP']}°")
-
     if temp_summary:
         lines.append("")
         lines.append("🕐 " + " → ".join(temp_summary))
 
-    # 한줄 팁
     lines.append("")
     if forecast["rain_hours"]:
         lines.append("👉 우산 챙기세요!")
     elif forecast["tmn"] is not None and forecast["tmn"] <= 0:
-        lines.append("👉 빙판길 조심하세요! 따뜻하게 입으세요 🧥")
+        lines.append("👉 빙판길 조심! 따뜻하게 입으세요 🧥")
     elif forecast["tmx"] is not None and forecast["tmx"] >= 30:
-        lines.append("👉 더위 조심하세요! 수분 보충 잊지 마세요 💧")
+        lines.append("👉 더위 조심! 수분 보충 잊지 마세요 💧")
     else:
         lines.append("👉 좋은 하루 보내세요!")
 
     return "\n".join(lines)
+
+
+def build_message_claude(forecast: dict, location: str, label: str) -> str | None:
+    """Claude API로 자연스러운 날씨 브리핑을 생성합니다."""
+
+    api_key = CONFIG["ANTHROPIC_API_KEY"]
+    if not api_key or not HAS_ANTHROPIC:
+        return None
+
+    d = forecast["date"]
+    month = int(d[4:6])
+    day = int(d[6:8])
+    dt = datetime(int(d[:4]), month, day)
+    weekday = WEEKDAYS[dt.weekday()]
+
+    # 시간대별 상세 데이터 구성
+    hourly_summary = []
+    for time, data in sorted(forecast["hourly"].items()):
+        hour = int(time[:2])
+        tmp = data.get("TMP", "?")
+        sky = SKY_MAP.get(data.get("SKY", "1"), "알 수 없음")
+        pty = PTY_MAP.get(data.get("PTY", "0"), "없음")
+        sno = data.get("SNO", "적설없음")
+        pop = data.get("POP", "0")  # 강수확률
+        reh = data.get("REH", "?")  # 습도
+        wsd = data.get("WSD", "?")  # 풍속
+        entry = f"{hour}시: {tmp}°C, {sky}, 강수형태={pty}, 강수확률={pop}%, 습도={reh}%, 풍속={wsd}m/s"
+        if sno not in ("적설없음", "0"):
+            entry += f", 적설={sno}"
+        hourly_summary.append(entry)
+
+    weather_data = f"""날짜: {month}/{day} ({weekday})
+지역: {location}
+최저기온: {forecast['tmn']:.0f}°C
+최고기온: {forecast['tmx']:.0f}°C
+대표 하늘: {forecast['sky_text']}
+강수 시간: {forecast['rain_hours'] if forecast['rain_hours'] else '없음'}
+적설 시간: {forecast['snow_hours'] if forecast['snow_hours'] else '없음'}
+
+시간대별:
+{chr(10).join(hourly_summary)}"""
+
+    prompt = f"""아래 기상청 데이터를 바탕으로 카카오톡 날씨 브리핑 메시지를 작성해줘.
+
+{weather_data}
+
+규칙:
+- 첫 줄: "{label}({month}/{day} {weekday}) {location} 날씨 [대표 날씨 이모지]" (이모지 1개만)
+- 빈 줄 후 ▸ 로 시작하는 3~5줄의 자연스러운 한국어 브리핑
+- 하늘 변화 흐름을 자연스럽게 서술 (예: "아침엔 흐리다가 오후부터 맑아짐")
+- 기온, 강수, 바람 등 핵심만 간결하게
+- 마지막에 빈 줄 + 👉 로 시작하는 한줄 팁 (출근/퇴근 맥락, 친근한 톤)
+- 프리픽스나 이모지 남발 금지, 깔끔하게
+- 메시지 본문만 출력, 다른 설명 없이"""
+
+    try:
+        print("🤖 Claude API로 브리핑 생성 중...")
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        message = response.content[0].text.strip()
+        print("✅ 브리핑 생성 완료")
+        return message
+
+    except Exception as e:
+        print(f"⚠️  Claude API 실패, 기본 메시지로 대체: {e}")
+        return None
+
+
+def build_message(forecast: dict, location: str, label: str = "오늘") -> str:
+    """메시지 생성 (Claude API 우선, 실패 시 기본 메시지)."""
+
+    message = build_message_claude(forecast, location, label)
+    if message:
+        return message
+    return build_message_simple(forecast, location, label)
 
 
 # ============================================================
@@ -529,7 +601,7 @@ cron 등록:
   0 7 * * * /usr/bin/python3 /path/to/pangyo_weather_kakao.py
         """,
     )
-    parser.add_argument("--today", action="store_true", help="오늘 날씨 조회 (기본: 내일)")
+    parser.add_argument("--tomorrow", action="store_true", help="내일 날씨 조회 (기본: 오늘)")
     parser.add_argument("--dry-run", action="store_true", help="카카오톡 전송 없이 콘솔 출력만")
     parser.add_argument("--api-key", help="공공데이터포털 API 키 (Decoding 버전)")
     parser.add_argument("--nx", type=int, default=CONFIG["NX"], help="기상청 격자 X좌표 (기본: 62 판교)")
@@ -542,12 +614,12 @@ cron 등록:
 
     # 날짜 결정
     now = datetime.now()
-    if args.today:
-        target = now
-        label = "오늘"
-    else:
+    if args.tomorrow:
         target = now + timedelta(days=1)
         label = "내일"
+    else:
+        target = now
+        label = "오늘"
 
     target_date = target.strftime("%Y%m%d")
     print(f"🗓️  {label} ({target.strftime('%Y-%m-%d')}) {args.location} 날씨 조회")
@@ -593,7 +665,7 @@ cron 등록:
             sys.exit(1)
 
         forecast = parse_forecast(items, target_date)
-        message = build_message(forecast, args.location)
+        message = build_message(forecast, args.location, label)
 
     except requests.exceptions.RequestException as e:
         print(f"❌ API 호출 실패: {e}")
