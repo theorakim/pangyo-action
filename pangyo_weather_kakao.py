@@ -220,6 +220,30 @@ PTY_MAP = {
 # 요일 이름
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
+# 기온별 옷차림 가이드
+CLOTHING_MAP = [
+    (28, None, "민소매, 반팔, 반바지, 숏팬츠, 린넨 의류, 원피스"),
+    (23, 27,   "반팔, 티셔츠, 얇은 셔츠, 반바지, 면바지"),
+    (20, 22,   "블라우스, 긴팔 티, 셔츠, 얇은 가디건, 면바지, 청바지, 7부바지"),
+    (17, 19,   "얇은 니트, 맨투맨, 가디건, 후드티, 바람막이, 긴바지, 청바지, 슬랙스"),
+    (12, 16,   "자켓, 가디건, 청자켓, 야상, 기모후드티, 니트, 맨투맨, 스타킹, 청바지, 면바지"),
+    (9, 11,    "트렌치코트, 야상, 자켓, 점퍼, 니트, 청바지, 스타킹, 기모바지"),
+    (5, 8,     "코트, 울 코트, 가죽자켓, 히트텍, 니트, 후리스, 기모 옷, 레깅스"),
+    (None, 4,  "패딩, 두꺼운 코트, 누빔 옷, 기모제품, 히트텍, 목도리, 장갑"),
+]
+
+
+def get_clothing_for_temp(temp: float) -> str:
+    """기온에 맞는 옷차림 목록을 반환합니다."""
+    for low, high, clothes in CLOTHING_MAP:
+        if low is not None and high is None and temp >= low:
+            return clothes
+        if low is None and high is not None and temp <= high:
+            return clothes
+        if low is not None and high is not None and low <= temp <= high:
+            return clothes
+    return "적절한 옷차림을 선택하세요"
+
 
 def parse_forecast(items: list[dict], target_date: str) -> dict:
     """API 응답 아이템들을 시간대별로 정리합니다."""
@@ -343,6 +367,15 @@ def build_message_simple(forecasts: list[tuple[dict, dict]], label: str) -> str:
         lines.append(f"▸ {warmer}이 {diff:.0f}°C 정도 포근해요")
         lines.append("")
 
+    # 나나의 옷장
+    if f1["tmx"] is not None:
+        clothing = get_clothing_for_temp(f1["tmx"])
+        items = clothing.split(", ")
+        pick = ", ".join(items[:2])
+        lines.append("👗 나나의 옷장")
+        lines.append(f"▸ 오늘은 {pick} 추천!")
+        lines.append("")
+
     # 나나의 한마디
     lines.append("🐱 나나의 한마디")
     if is_weekend:
@@ -414,6 +447,10 @@ def build_message_claude(forecasts: list[tuple[dict, dict]], label: str) -> str 
 
     weather_data = f"날짜: {month}/{day} ({weekday})\n\n" + "\n\n".join(weather_sections)
 
+    # 분당 기준 옷차림 데이터
+    bundang_tmx = forecasts[0][1]["tmx"]
+    clothing_info = get_clothing_for_temp(bundang_tmx) if bundang_tmx is not None else ""
+
     if is_weekend:
         tip_rule = '- 🐱 나나의 한마디: "서천에 간다면!" 톤으로, 서천 날씨 기반 한줄 팁 (예: "서천에 간다면! 바람막이 하나면 충분해요 🌲")'
     else:
@@ -423,11 +460,14 @@ def build_message_claude(forecasts: list[tuple[dict, dict]], label: str) -> str 
 
 {weather_data}
 
+오늘 낮 최고기온({bundang_tmx:.0f}°C) 기준 옷차림 후보: {clothing_info}
+
 규칙:
 - 첫 줄: "{label}({month}/{day} {weekday}) 날씨 브리핑 [대표 날씨 이모지]" (이모지 1개만)
 - 빈 줄 후 "💻 분당" 섹션: ▸ 로 시작하는 3줄 (기온, 하늘 변화, 강수/바람 등)
 - 빈 줄 후 "🌲 서천" 섹션: ▸ 로 시작하는 3줄 (같은 구조)
 - 빈 줄 후 "🌡️ 두 동네 온도차" 섹션: ▸ 로 시작하는 1줄 (두 지역 기온 차이를 자연스럽게)
+- 빈 줄 후 "👗 나나의 옷장" 섹션: ▸ 로 시작하는 1줄 (위 옷차림 후보에서 센스있게 1~2개만 골라 자연스럽게 추천. 예: "코트에 니트 조합이면 딱!" 또는 "후드티 하나면 충분해요~")
 - 빈 줄 후 "🐱 나나의 한마디" 섹션: ▸ 로 시작하는 1줄 팁
 {tip_rule}
 - 하늘 변화 흐름을 자연스럽게 서술 (예: "아침엔 흐리다가 오후부터 맑아짐")
