@@ -1,0 +1,33 @@
+name: 판교 날씨 카카오톡 전송
+
+on:
+  schedule:
+    # 매일 아침 6시 (KST) = UTC 21:00 (전날)
+    - cron: '0 21 * * *'
+  workflow_dispatch: # 수동 실행 지원
+
+jobs:
+  send-weather:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 🐍 Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 🌤️ 날씨 조회 및 카카오톡 전송
+        env:
+          KMA_API_KEY: ${{ secrets.KMA_API_KEY }}
+          KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          TZ: Asia/Seoul
+        run: python pangyo_weather_kakao.py
