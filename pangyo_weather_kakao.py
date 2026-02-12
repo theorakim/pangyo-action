@@ -69,13 +69,14 @@ CONFIG = {
     "KAKAO_SCRIPT": os.environ.get("KAKAO_SCRIPT", "/mnt/skills/user/kakaotalk/scripts/send_message.py"),
 
     # 메시지 프리픽스
-    "PREFIX": os.environ.get("KAKAO_PREFIX", "🐰🔔"),
-
-    # 판교 좌표 (기상청 격자: nx=62, ny=123)
-    "NX": 62,
-    "NY": 123,
-    "LOCATION_NAME": "판교",
+    "PREFIX": os.environ.get("KAKAO_PREFIX", "🐱"),
 }
+
+# 조회 지역 목록
+LOCATIONS = [
+    {"name": "분당", "emoji": "💻", "nx": 62, "ny": 123},
+    {"name": "서천", "emoji": "🌲", "nx": 55, "ny": 94},
+]
 
 
 # ============================================================
@@ -304,70 +305,64 @@ def parse_forecast(items: list[dict], target_date: str) -> dict:
     }
 
 
-def build_message_simple(forecast: dict, location: str, label: str) -> str:
+def build_message_simple(forecasts: list[tuple[dict, dict]], label: str) -> str:
     """폴백용 간단한 메시지 생성 (Claude API 없을 때)."""
 
-    d = forecast["date"]
+    first_forecast = forecasts[0][1]
+    d = first_forecast["date"]
     month = int(d[4:6])
     day = int(d[6:8])
     dt = datetime(int(d[:4]), month, day)
     weekday = WEEKDAYS[dt.weekday()]
+    day_of_week = dt.weekday()
+    is_weekend = day_of_week >= 4
 
     lines = []
-    lines.append(f"{label}({month}/{day} {weekday}) {location} 날씨 {forecast['sky_text']}")
+    lines.append(f"{label}({month}/{day} {weekday}) 날씨 브리핑")
     lines.append("")
 
-    if forecast["tmn"] is not None and forecast["tmx"] is not None:
-        lines.append(f"▸ 아침 {forecast['tmn']:.0f}°C, 낮 최고 {forecast['tmx']:.0f}°C")
-
-    lines.append(f"▸ {forecast['sky_text']}")
-
-    if forecast["rain_hours"]:
-        hours = [h for h, _ in forecast["rain_hours"]]
-        lines.append(f"▸ 강수 예상: {', '.join(hours)}")
-    else:
-        lines.append("▸ 강수 예상 없음")
-
-    if forecast["snow_hours"]:
-        for hour, sno in forecast["snow_hours"]:
-            lines.append(f"▸ 적설 예상: {hour} {sno}")
-
-    key_hours = ["0600", "0900", "1200", "1500", "1800", "2100"]
-    temp_summary = []
-    for h in key_hours:
-        if h in forecast["hourly"] and "TMP" in forecast["hourly"][h]:
-            temp_summary.append(f"{int(h[:2])}시 {forecast['hourly'][h]['TMP']}°")
-    if temp_summary:
+    for loc_info, forecast in forecasts:
+        lines.append(f"{loc_info['emoji']} {loc_info['name']}")
+        if forecast["tmn"] is not None and forecast["tmx"] is not None:
+            lines.append(f"▸ 아침 {forecast['tmn']:.0f}°C, 낮 최고 {forecast['tmx']:.0f}°C")
+        lines.append(f"▸ {forecast['sky_text']}")
+        if forecast["rain_hours"]:
+            hours = [h for h, _ in forecast["rain_hours"]]
+            lines.append(f"▸ 강수 예상: {', '.join(hours)}")
+        else:
+            lines.append("▸ 강수 예상 없음")
         lines.append("")
-        lines.append("🕐 " + " → ".join(temp_summary))
 
-    lines.append("")
-    if forecast["rain_hours"]:
-        lines.append("👉 우산 챙기세요!")
-    elif forecast["tmn"] is not None and forecast["tmn"] <= 0:
-        lines.append("👉 빙판길 조심! 따뜻하게 입으세요 🧥")
-    elif forecast["tmx"] is not None and forecast["tmx"] >= 30:
-        lines.append("👉 더위 조심! 수분 보충 잊지 마세요 💧")
+    # 온도차 비교
+    f1 = forecasts[0][1]
+    f2 = forecasts[1][1]
+    if f1["tmx"] is not None and f2["tmx"] is not None:
+        diff = abs(f1["tmx"] - f2["tmx"])
+        warmer = forecasts[0][0]["name"] if f1["tmx"] > f2["tmx"] else forecasts[1][0]["name"]
+        lines.append("🌡️ 두 동네 온도차")
+        lines.append(f"▸ {warmer}이 {diff:.0f}°C 정도 포근해요")
+        lines.append("")
+
+    # 나나의 한마디
+    lines.append("🐱 나나의 한마디")
+    if is_weekend:
+        if f2["rain_hours"]:
+            lines.append("▸ 서천에 간다면! 우산 꼭 챙기세요 🌧️")
+        else:
+            lines.append("▸ 서천에 간다면! 좋은 주말 보내세요 🌲")
     else:
-        lines.append("👉 좋은 하루 보내세요!")
+        if f1["rain_hours"]:
+            lines.append("▸ 출근길 우산 챙기세요!")
+        elif f1["tmn"] is not None and f1["tmn"] <= 0:
+            lines.append("▸ 빙판길 조심! 따뜻하게 입으세요 🧥")
+        else:
+            lines.append("▸ 좋은 하루 보내세요!")
 
     return "\n".join(lines)
 
 
-def build_message_claude(forecast: dict, location: str, label: str) -> str | None:
-    """Claude API로 자연스러운 날씨 브리핑을 생성합니다."""
-
-    api_key = CONFIG["ANTHROPIC_API_KEY"]
-    if not api_key or not HAS_ANTHROPIC:
-        return None
-
-    d = forecast["date"]
-    month = int(d[4:6])
-    day = int(d[6:8])
-    dt = datetime(int(d[:4]), month, day)
-    weekday = WEEKDAYS[dt.weekday()]
-
-    # 시간대별 상세 데이터 구성
+def _format_hourly_data(forecast: dict) -> str:
+    """시간대별 상세 데이터를 텍스트로 구성합니다."""
     hourly_summary = []
     for time, data in sorted(forecast["hourly"].items()):
         hour = int(time[:2])
@@ -375,16 +370,38 @@ def build_message_claude(forecast: dict, location: str, label: str) -> str | Non
         sky = SKY_MAP.get(data.get("SKY", "1"), "알 수 없음")
         pty = PTY_MAP.get(data.get("PTY", "0"), "없음")
         sno = data.get("SNO", "적설없음")
-        pop = data.get("POP", "0")  # 강수확률
-        reh = data.get("REH", "?")  # 습도
-        wsd = data.get("WSD", "?")  # 풍속
+        pop = data.get("POP", "0")
+        reh = data.get("REH", "?")
+        wsd = data.get("WSD", "?")
         entry = f"{hour}시: {tmp}°C, {sky}, 강수형태={pty}, 강수확률={pop}%, 습도={reh}%, 풍속={wsd}m/s"
         if sno not in ("적설없음", "0"):
             entry += f", 적설={sno}"
         hourly_summary.append(entry)
+    return chr(10).join(hourly_summary)
 
-    weather_data = f"""날짜: {month}/{day} ({weekday})
-지역: {location}
+
+def build_message_claude(forecasts: list[tuple[dict, dict]], label: str) -> str | None:
+    """Claude API로 두 지역 날씨 브리핑을 생성합니다.
+
+    forecasts: [(location_info, forecast_data), ...] 형태의 리스트
+    """
+    api_key = CONFIG["ANTHROPIC_API_KEY"]
+    if not api_key or not HAS_ANTHROPIC:
+        return None
+
+    first_forecast = forecasts[0][1]
+    d = first_forecast["date"]
+    month = int(d[4:6])
+    day = int(d[6:8])
+    dt = datetime(int(d[:4]), month, day)
+    weekday = WEEKDAYS[dt.weekday()]
+    day_of_week = dt.weekday()  # 0=월 ~ 6=일
+    is_weekend = day_of_week >= 4  # 금(4), 토(5), 일(6)
+
+    # 각 지역별 데이터 구성
+    weather_sections = []
+    for loc_info, forecast in forecasts:
+        section = f"""[{loc_info['emoji']} {loc_info['name']}]
 최저기온: {forecast['tmn']:.0f}°C
 최고기온: {forecast['tmx']:.0f}°C
 대표 하늘: {forecast['sky_text']}
@@ -392,18 +409,29 @@ def build_message_claude(forecast: dict, location: str, label: str) -> str | Non
 적설 시간: {forecast['snow_hours'] if forecast['snow_hours'] else '없음'}
 
 시간대별:
-{chr(10).join(hourly_summary)}"""
+{_format_hourly_data(forecast)}"""
+        weather_sections.append(section)
+
+    weather_data = f"날짜: {month}/{day} ({weekday})\n\n" + "\n\n".join(weather_sections)
+
+    if is_weekend:
+        tip_rule = '- 🐱 나나의 한마디: "서천에 간다면!" 톤으로, 서천 날씨 기반 한줄 팁 (예: "서천에 간다면! 바람막이 하나면 충분해요 🌲")'
+    else:
+        tip_rule = '- 🐱 나나의 한마디: 분당 출퇴근 기반 한줄 팁 (예: "출근길 목도리 챙기세요!")'
 
     prompt = f"""아래 기상청 데이터를 바탕으로 카카오톡 날씨 브리핑 메시지를 작성해줘.
 
 {weather_data}
 
 규칙:
-- 첫 줄: "{label}({month}/{day} {weekday}) {location} 날씨 [대표 날씨 이모지]" (이모지 1개만)
-- 빈 줄 후 ▸ 로 시작하는 3~5줄의 자연스러운 한국어 브리핑
+- 첫 줄: "{label}({month}/{day} {weekday}) 날씨 브리핑 [대표 날씨 이모지]" (이모지 1개만)
+- 빈 줄 후 "💻 분당" 섹션: ▸ 로 시작하는 3줄 (기온, 하늘 변화, 강수/바람 등)
+- 빈 줄 후 "🌲 서천" 섹션: ▸ 로 시작하는 3줄 (같은 구조)
+- 빈 줄 후 "🌡️ 두 동네 온도차" 섹션: ▸ 로 시작하는 1줄 (두 지역 기온 차이를 자연스럽게)
+- 빈 줄 후 "🐱 나나의 한마디" 섹션: ▸ 로 시작하는 1줄 팁
+{tip_rule}
 - 하늘 변화 흐름을 자연스럽게 서술 (예: "아침엔 흐리다가 오후부터 맑아짐")
 - 기온, 강수, 바람 등 핵심만 간결하게
-- 마지막에 빈 줄 + 👉 로 시작하는 한줄 팁 (출근/퇴근 맥락, 친근한 톤)
 - 프리픽스나 이모지 남발 금지, 깔끔하게
 - 메시지 본문만 출력, 다른 설명 없이"""
 
@@ -412,7 +440,7 @@ def build_message_claude(forecast: dict, location: str, label: str) -> str | Non
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model="claude-sonnet-4-5-20250929",
-            max_tokens=500,
+            max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
         message = response.content[0].text.strip()
@@ -424,13 +452,13 @@ def build_message_claude(forecast: dict, location: str, label: str) -> str | Non
         return None
 
 
-def build_message(forecast: dict, location: str, label: str = "오늘") -> str:
+def build_message(forecasts: list[tuple[dict, dict]], label: str = "오늘") -> str:
     """메시지 생성 (Claude API 우선, 실패 시 기본 메시지)."""
 
-    message = build_message_claude(forecast, location, label)
+    message = build_message_claude(forecasts, label)
     if message:
         return message
-    return build_message_simple(forecast, location, label)
+    return build_message_simple(forecasts, label)
 
 
 # ============================================================
@@ -588,26 +616,20 @@ def send_kakao(message: str, prefix: str, script_path: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="판교 날씨를 조회하여 카카오톡으로 전송합니다 🌤️",
+        description="분당·서천 날씨를 조회하여 카카오톡으로 전송합니다 🐱",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 예시:
-  python3 pangyo_weather_kakao.py              # 내일 날씨 카톡 전송
-  python3 pangyo_weather_kakao.py --today      # 오늘 날씨 카톡 전송
+  python3 pangyo_weather_kakao.py              # 오늘 날씨 카톡 전송
+  python3 pangyo_weather_kakao.py --tomorrow   # 내일 날씨 카톡 전송
   python3 pangyo_weather_kakao.py --dry-run    # 콘솔만 출력 (카톡 X)
   python3 pangyo_weather_kakao.py --api-key YOUR_KEY  # API 키 직접 지정
-
-cron 등록:
-  0 7 * * * /usr/bin/python3 /path/to/pangyo_weather_kakao.py
         """,
     )
     parser.add_argument("--tomorrow", action="store_true", help="내일 날씨 조회 (기본: 오늘)")
     parser.add_argument("--dry-run", action="store_true", help="카카오톡 전송 없이 콘솔 출력만")
     parser.add_argument("--api-key", help="공공데이터포털 API 키 (Decoding 버전)")
-    parser.add_argument("--nx", type=int, default=CONFIG["NX"], help="기상청 격자 X좌표 (기본: 62 판교)")
-    parser.add_argument("--ny", type=int, default=CONFIG["NY"], help="기상청 격자 Y좌표 (기본: 123 판교)")
-    parser.add_argument("--location", default=CONFIG["LOCATION_NAME"], help="지역 이름 (기본: 판교)")
-    parser.add_argument("--prefix", default=CONFIG["PREFIX"], help="카카오톡 프리픽스 (기본: 🐰🔔)")
+    parser.add_argument("--prefix", default=CONFIG["PREFIX"], help="카카오톡 프리픽스 (기본: 🐱)")
     parser.add_argument("--kakao-script", default=CONFIG["KAKAO_SCRIPT"], help="send_message.py 경로")
 
     args = parser.parse_args()
@@ -622,8 +644,8 @@ cron 등록:
         label = "오늘"
 
     target_date = target.strftime("%Y%m%d")
-    print(f"🗓️  {label} ({target.strftime('%Y-%m-%d')}) {args.location} 날씨 조회")
-    print(f"   격자 좌표: nx={args.nx}, ny={args.ny}")
+    loc_names = ", ".join(loc["name"] for loc in LOCATIONS)
+    print(f"🗓️  {label} ({target.strftime('%Y-%m-%d')}) {loc_names} 날씨 조회")
     print()
 
     # API 키 결정
@@ -633,39 +655,28 @@ cron 등록:
         print("=" * 60)
         print("⚠️  기상청 API 키가 설정되지 않았습니다!")
         print()
-        print("설정 방법:")
-        print("  1. https://www.data.go.kr 가입")
-        print("  2. '기상청_단기예보 조회서비스' 활용신청")
-        print("  3. 마이페이지 → 일반 인증키(Decoding) 복사")
-        print("  4. 아래 방법 중 하나로 입력:")
-        print()
-        print("  방법 A) 스크립트 CONFIG에 직접 입력")
-        print('    CONFIG["KMA_API_KEY"] = "발급받은키"')
-        print()
-        print("  방법 B) 실행 시 인자로 전달")
-        print("    python3 pangyo_weather_kakao.py --api-key 발급받은키")
-        print()
-        print("  방법 C) 환경변수 사용")
-        print("    export KMA_API_KEY=발급받은키")
+        print("  export KMA_API_KEY=발급받은키")
+        print("  또는 --api-key 인자로 전달")
         print("=" * 60)
-
-        # 환경변수 폴백
-        import os
         api_key = os.environ.get("KMA_API_KEY")
         if not api_key:
             sys.exit(1)
 
-    # 날씨 조회
+    # 두 지역 날씨 조회
     try:
-        items = fetch_kma_forecast(target_date, args.nx, args.ny, api_key)
+        forecasts = []
+        for loc in LOCATIONS:
+            print(f"📍 {loc['emoji']} {loc['name']} (nx={loc['nx']}, ny={loc['ny']}) 조회 중...")
+            items = fetch_kma_forecast(target_date, loc["nx"], loc["ny"], api_key)
 
-        if not items:
-            print(f"⚠️  {target_date}에 대한 예보 데이터가 없습니다.")
-            print("   발표 시각에 따라 아직 데이터가 없을 수 있습니다.")
-            sys.exit(1)
+            if not items:
+                print(f"⚠️  {loc['name']}: {target_date}에 대한 예보 데이터가 없습니다.")
+                sys.exit(1)
 
-        forecast = parse_forecast(items, target_date)
-        message = build_message(forecast, args.location, label)
+            forecast = parse_forecast(items, target_date)
+            forecasts.append((loc, forecast))
+
+        message = build_message(forecasts, label)
 
     except requests.exceptions.RequestException as e:
         print(f"❌ API 호출 실패: {e}")
