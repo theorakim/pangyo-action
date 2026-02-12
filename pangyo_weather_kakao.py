@@ -54,6 +54,7 @@ CONFIG = {
     "KAKAO_ACCESS_TOKEN": os.environ.get("KAKAO_ACCESS_TOKEN", ""),
     "KAKAO_REFRESH_TOKEN": os.environ.get("KAKAO_REFRESH_TOKEN", ""),
     "KAKAO_REST_API_KEY": os.environ.get("KAKAO_REST_API_KEY", ""),
+    "KAKAO_CLIENT_SECRET": os.environ.get("KAKAO_CLIENT_SECRET", ""),
 
     # 카카오톡 send_message.py 경로 (로컬 실행용 폴백)
     "KAKAO_SCRIPT": os.environ.get("KAKAO_SCRIPT", "/mnt/skills/user/kakaotalk/scripts/send_message.py"),
@@ -376,7 +377,7 @@ def fetch_openweathermap(target_date: str) -> dict | None:
 # 카카오톡 토큰 갱신
 # ============================================================
 
-def refresh_kakao_token(refresh_token: str, rest_api_key: str) -> str | None:
+def refresh_kakao_token(refresh_token: str, rest_api_key: str, client_secret: str = "") -> str | None:
     """카카오 refresh_token으로 access_token을 갱신합니다."""
 
     url = "https://kauth.kakao.com/oauth/token"
@@ -385,6 +386,8 @@ def refresh_kakao_token(refresh_token: str, rest_api_key: str) -> str | None:
         "client_id": rest_api_key,
         "refresh_token": refresh_token,
     }
+    if client_secret:
+        data["client_secret"] = client_secret
 
     try:
         resp = requests.post(url, data=data, timeout=10)
@@ -478,6 +481,7 @@ def send_kakao(message: str, prefix: str, script_path: str) -> bool:
     access_token = CONFIG["KAKAO_ACCESS_TOKEN"]
     refresh_token = CONFIG["KAKAO_REFRESH_TOKEN"]
     rest_api_key = CONFIG["KAKAO_REST_API_KEY"]
+    client_secret = CONFIG["KAKAO_CLIENT_SECRET"]
 
     # 1) access_token이 있으면 API 직접 호출
     if access_token:
@@ -485,7 +489,7 @@ def send_kakao(message: str, prefix: str, script_path: str) -> bool:
 
         if not success and refresh_token and rest_api_key:
             # 토큰 갱신 후 재시도
-            new_token = refresh_kakao_token(refresh_token, rest_api_key)
+            new_token = refresh_kakao_token(refresh_token, rest_api_key, client_secret)
             if new_token:
                 success = send_kakao_api(message, prefix, new_token)
 
