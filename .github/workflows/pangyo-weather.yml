@@ -2,8 +2,8 @@ name: 판교 날씨 카카오톡 전송
 
 on:
   schedule:
-    # 매일 아침 6시 (KST) = UTC 21:00 (전날)
-    - cron: '0 21 * * *'
+    # 매일 아침 5:40 (KST) = UTC 20:40 (전날) — GitHub Actions 지연 감안
+    - cron: '40 20 * * *'
   workflow_dispatch: # 수동 실행 지원
 
 jobs:
