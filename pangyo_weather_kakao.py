@@ -517,6 +517,31 @@ def fetch_openweathermap(target_date: str) -> dict | None:
 # 카카오톡 토큰 갱신
 # ============================================================
 
+def update_github_secret(secret_name: str, secret_value: str) -> bool:
+    """GitHub Actions Secret을 자동 업데이트합니다 (GH_PAT 필요)."""
+    gh_pat = os.environ.get("GH_PAT", "")
+    gh_repo = os.environ.get("GITHUB_REPOSITORY", "")
+
+    if not gh_pat or not gh_repo:
+        return False
+
+    try:
+        result = subprocess.run(
+            ["gh", "secret", "set", secret_name, "--repo", gh_repo, "--body", secret_value],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "GH_TOKEN": gh_pat},
+        )
+        if result.returncode == 0:
+            print(f"🔄 GitHub Secret '{secret_name}' 자동 업데이트 완료")
+            return True
+        else:
+            print(f"⚠️  GitHub Secret 업데이트 실패: {result.stderr}")
+    except Exception as e:
+        print(f"⚠️  GitHub Secret 업데이트 실패: {e}")
+
+    return False
+
+
 def refresh_kakao_token(refresh_token: str, rest_api_key: str, client_secret: str = "") -> str | None:
     """카카오 refresh_token으로 access_token을 갱신합니다."""
 
@@ -539,11 +564,13 @@ def refresh_kakao_token(refresh_token: str, rest_api_key: str, client_secret: st
 
         if new_access_token:
             print("🔄 카카오 access_token 갱신 완료")
+            update_github_secret("KAKAO_ACCESS_TOKEN", new_access_token)
+
             # refresh_token도 갱신된 경우 (만료 1개월 이내일 때)
             if new_refresh_token:
                 print("🔄 카카오 refresh_token도 함께 갱신됨")
-                # GitHub Actions에서는 수동으로 Secret 업데이트 필요
-                print(f"⚠️  새 refresh_token을 GitHub Secrets에 업데이트하세요")
+                update_github_secret("KAKAO_REFRESH_TOKEN", new_refresh_token)
+
             return new_access_token
 
     except Exception as e:
