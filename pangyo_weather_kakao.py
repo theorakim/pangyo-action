@@ -517,33 +517,12 @@ def fetch_openweathermap(target_date: str) -> dict | None:
 # 카카오톡 토큰 갱신
 # ============================================================
 
-def update_github_secret(secret_name: str, secret_value: str) -> bool:
-    """GitHub Actions Secret을 자동 업데이트합니다 (GH_PAT 필요)."""
-    gh_pat = os.environ.get("GH_PAT", "")
-    gh_repo = os.environ.get("GITHUB_REPOSITORY", "")
+def refresh_kakao_token(refresh_token: str, rest_api_key: str, client_secret: str = "") -> dict | None:
+    """카카오 refresh_token으로 토큰을 갱신합니다.
 
-    if not gh_pat or not gh_repo:
-        return False
-
-    try:
-        result = subprocess.run(
-            ["gh", "secret", "set", secret_name, "--repo", gh_repo, "--body", secret_value],
-            capture_output=True, text=True, timeout=30,
-            env={**os.environ, "GH_TOKEN": gh_pat},
-        )
-        if result.returncode == 0:
-            print(f"🔄 GitHub Secret '{secret_name}' 자동 업데이트 완료")
-            return True
-        else:
-            print(f"⚠️  GitHub Secret 업데이트 실패: {result.stderr}")
-    except Exception as e:
-        print(f"⚠️  GitHub Secret 업데이트 실패: {e}")
-
-    return False
-
-
-def refresh_kakao_token(refresh_token: str, rest_api_key: str, client_secret: str = "") -> str | None:
-    """카카오 refresh_token으로 access_token을 갱신합니다."""
+    반환값: {"access_token": str, "refresh_token": str|None} 또는 None
+    refresh_token은 만료 1개월 이내일 때만 새로 발급됨.
+    """
 
     url = "https://kauth.kakao.com/oauth/token"
     data = {
@@ -564,19 +543,25 @@ def refresh_kakao_token(refresh_token: str, rest_api_key: str, client_secret: st
 
         if new_access_token:
             print("🔄 카카오 access_token 갱신 완료")
-            update_github_secret("KAKAO_ACCESS_TOKEN", new_access_token)
-
-            # refresh_token도 갱신된 경우 (만료 1개월 이내일 때)
             if new_refresh_token:
                 print("🔄 카카오 refresh_token도 함께 갱신됨")
-                update_github_secret("KAKAO_REFRESH_TOKEN", new_refresh_token)
-
-            return new_access_token
+            return {
+                "access_token": new_access_token,
+                "refresh_token": new_refresh_token,
+            }
 
     except Exception as e:
         print(f"❌ 토큰 갱신 실패: {e}")
 
     return None
+
+
+def write_github_actions_output(key: str, value: str):
+    """GitHub Actions output으로 값을 내보냅니다."""
+    output_file = os.environ.get("GITHUB_OUTPUT")
+    if output_file:
+        with open(output_file, "a") as f:
+            f.write(f"{key}={value}\n")
 
 
 # ============================================================
@@ -643,33 +628,35 @@ def send_kakao_script(message: str, prefix: str, script_path: str) -> bool:
 
 
 def send_kakao(message: str, prefix: str, script_path: str) -> bool:
-    """카카오톡 전송 (API 우선, 실패 시 스크립트 폴백)."""
+    """카카오톡 전송 (매번 토큰 선제 갱신 → 전송 → Secrets 업데이트용 output)."""
 
     access_token = CONFIG["KAKAO_ACCESS_TOKEN"]
     refresh_token = CONFIG["KAKAO_REFRESH_TOKEN"]
     rest_api_key = CONFIG["KAKAO_REST_API_KEY"]
     client_secret = CONFIG["KAKAO_CLIENT_SECRET"]
 
-    # 1) access_token이 있으면 API 직접 호출
+    # 1) 토큰 선제 갱신 — access_token은 6시간짜리라 매일 갱신이 안전
+    if refresh_token and rest_api_key:
+        print("🔄 토큰 선제 갱신 시도...")
+        tokens = refresh_kakao_token(refresh_token, rest_api_key, client_secret)
+        if tokens:
+            access_token = tokens["access_token"]
+            write_github_actions_output("new_access_token", access_token)
+            if tokens["refresh_token"]:
+                write_github_actions_output("new_refresh_token", tokens["refresh_token"])
+
+    # 2) 카카오톡 API 전송
     if access_token:
         success = send_kakao_api(message, prefix, access_token)
-
-        if not success and refresh_token and rest_api_key:
-            # 토큰 갱신 후 재시도
-            new_token = refresh_kakao_token(refresh_token, rest_api_key, client_secret)
-            if new_token:
-                success = send_kakao_api(message, prefix, new_token)
-
         if success:
             return True
-
         print("⚠️  API 전송 실패, 스크립트 폴백 시도...")
 
-    # 2) 스크립트 폴백 (로컬 환경)
+    # 3) 스크립트 폴백 (로컬 환경)
     if Path(script_path).exists():
         return send_kakao_script(message, prefix, script_path)
 
-    # 3) 둘 다 실패
+    # 4) 둘 다 실패
     if not access_token:
         print("\n❌ 카카오톡 전송 수단이 없습니다.")
         print("   환경변수 KAKAO_ACCESS_TOKEN을 설정하거나")

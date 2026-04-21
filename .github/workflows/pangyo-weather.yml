@@ -24,6 +24,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 🌤️ 날씨 조회 및 카카오톡 전송
+        id: weather
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KMA_API_KEY: ${{ secrets.KMA_API_KEY }}
@@ -34,3 +35,16 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           TZ: Asia/Seoul
         run: python pangyo_weather_kakao.py
+
+      - name: 🔐 갱신된 토큰을 GitHub Secrets에 저장
+        if: steps.weather.outputs.new_access_token != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "🔄 access_token Secrets 업데이트..."
+          echo -n "${{ steps.weather.outputs.new_access_token }}" | gh secret set KAKAO_ACCESS_TOKEN
+          if [ -n "${{ steps.weather.outputs.new_refresh_token }}" ]; then
+            echo "🔄 refresh_token Secrets 업데이트..."
+            echo -n "${{ steps.weather.outputs.new_refresh_token }}" | gh secret set KAKAO_REFRESH_TOKEN
+          fi
+          echo "✅ Secrets 업데이트 완료"
